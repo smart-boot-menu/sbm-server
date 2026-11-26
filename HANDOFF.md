@@ -1,22 +1,33 @@
 # Handoff — Agent 05 (`sbm-server`)
 
-The server is optional. Ordinary local boot does not contact it. Shared structs come from `sbm-common` `28d38450954f0b93815e12f31da92370b13a7462` (`sbm-protocol`, `sbm-types`). This repo does not fork those structs.
+The server is optional. Ordinary local boot does not contact it. Shared structs come from `sbm-common` `4b432228caae40479d28c8f6f48fb7cb9cc6df85` (`sbm-protocol`, `sbm-types`). This repo does not fork those structs.
 
-Signing bytes are implemented once, in `crates/sbm-wire`, against `test-vectors/command-envelope.v1.json`. Spec 06 §16.1 names that profile and the wire field `signature_ed25519_hex`.
+Signing bytes are `sbm_protocol::command_signing_preimage`. `sbm-wire` calls that function and checks it against `sbm-common/test-vectors/command-signing.v1.json` and against `serde_json` compact output. Spec 06 §16.1 names the profile and the wire field `signature_ed25519_hex`.
+
+There is no Agent 10 tree, prompt, or handoff. The scope discrepancy was Spec 06's table cell for `RecoveryAccess` ("Launch only") against §16 rule 5 and `AuthScope::is_allowed_in_uefi`. The table now matches the helper: UEFI accepts `read_only` and `boot_select` only. This server does not change `is_allowed_in_uefi`. A recovery target UEFI may apply is `BootCommand::BootTarget` for a reported target such as `sbm-core:slot-a`, scope `boot_select`. `BootCommand::BootRecovery` is signed with `recovery_access` and is not on `GET /v1/devices/{id}/boot-policy`.
 
 ## Verified here
 
-`cargo test --workspace` covers the signing profile, the enroll → report targets → queue next boot → device ack path, UEFI rejection of a `recovery_access` command without blocking a later boot selection, a bad verify key and an expired command (neither advances `last_sequence`), cross-device ack, role scope, CSRF, audit immutability, a MAC address ignored as identity, and an authenticated recovery tunnel whose first bytes are `RFB 003.008\n`. The dashboard shell is the built SvelteKit app, not the placeholder.
+`cargo test --workspace` covers the signing profile and the published vectors, the enroll → report targets → queue next boot → device ack path, UEFI rejection of a `recovery_access` command without blocking a later boot selection, a bad verify key and an expired command (neither advances `last_sequence`), a repeated terminal ack, revocation (the revoked device's pending list is only `revoke_enrollment`, another device cannot read it, a later boot command is 409, and boot-policy is empty), cross-device ack, role scope, CSRF, audit immutability, a MAC address ignored as identity, an authenticated recovery tunnel whose first bytes are `RFB 003.008\n`, an unauthenticated recovery socket rejected with 401, and another device rejected from that tunnel. `POST /v1/devices/{id}/boot-success` stores one `BootSuccessReport` per attempt, repeats the same report, and returns 409 when the details differ. It does not queue a command or reboot. The dashboard shell is the built SvelteKit app, not the placeholder.
+
+Passkey login no longer inserts the existing credential and swallows the error. When `Passkey::update_credential` reports a change, the row is updated and a failed write does not issue a session. An unchanged counter (the usual synced passkey) does not rewrite the row. The SQL replacement is a unit test. A full WebAuthn ceremony is not in this suite.
 
 Those tests use `sbm-sim`. They do not boot firmware and they do not reboot the host. `cargo clippy --all-targets -- -D warnings` is clean. Release-binary startup and request timings from this machine are in `../research/validation/evidence/sbm-server-2026-11-26.md`. Those timings are not the UEFI frame targets.
 
-## `sbm-common` gaps
+## Unresolved
 
-- Command signing stays in `sbm-wire` so `sbm-protocol` can remain `no_std` without `serde_json` and `ed25519-dalek`. Agent 01 should add something like `command_signing_preimage()` next to `COMMAND_SIGNING_DOMAIN_V1` if the UEFI build can take the compact JSON bytes from outside the crate. Until then, UEFI and this server must both follow Spec 06 §16.1. The golden vector is the check.
-- `AuthScope::is_allowed_in_uefi` returns true only for `ReadOnly` and `BootSelect`. Spec 06's table says `RecoveryAccess` is "Launch only" in UEFI. This server follows the Rust helper and does not change `sbm-common`. A recovery boot that UEFI may apply is `BootCommand::BootTarget` for a reported target such as `sbm-core:slot-a`, scope `boot_select`. `BootCommand::BootRecovery` is signed with `recovery_access` and is not included in `GET /v1/devices/{id}/boot-policy`.
-- Operator session tokens and the dashboard color tokens are local. They are not protocol types.
-- Enrollment still accepts a TPM attestation blob and records that it was present or absent. It does not verify the quote.
-- Passkey sign-in calls `Passkey::update_credential` and then `insert_passkey(...).ok()`. A duplicate credential id is swallowed, so the signature counter may not be written back. Registration of a second passkey for a new username is rejected; an admin can add a passkey only to the signed-in admin username.
+- Enrollment records whether a TPM attestation blob was present. It does not verify the quote. Do not describe attestation as verified.
+- The recovery session kind is `outbound-tunnel`. The open response says `desktop: "not-attached"` and `transport: "device-initiated-websocket"`. `sbm-core` leaves `wayvnc` disabled until an operator enables it, and then it binds `127.0.0.1` with a generated password. No artifact speaks this server's outbound WebSocket, so the framebuffer is still `sbm-sim` (160×100, raw RFB, name `sbm-sim (no hardware)`). The text channel is a banner, not a PTY. The dashboard was not rewritten.
+- Storage plans and OS install plans return 403 `destructive_disabled` / `os_install_disabled`. There is no configuration flag that turns them on.
+- PostgreSQL: `migrations-postgres/0001_init.sql` is SQL only. The running queries are SQLite. Do not claim a Postgres deployment from this tree.
+- `docker build` was not run. No image was published. No public listener was deployed.
+- A stolen `command.key.bin` can sign boot selections for known targets until the key is rotated and devices enroll again. It does not give a shell in UEFI.
+- Passkey authenticator attestation is whatever `webauthn-rs` 0.6.2 checks. This tree does not add an authenticator allow-list. Registration of a second passkey for a new username is rejected; an admin can add a passkey only to the signed-in admin username.
+- WebRTC, WireGuard, and Iroh are not started.
+
+## `sbm-agent`
+
+`POST /v1/devices/{id}/boot-success` accepts a schema 1.0 `BootSuccessReport` from the enrolled device's mTLS certificate. `attempt_id` is cleaned text, `target_id` must be a boot target id, and `confirmed_at_unix` must be positive. The same `(device_id, attempt_id)` with the same details is idempotent. Different details are 409. Another device's certificate is 404. The response says the report was stored and that no reboot was requested. The agent is not implemented in this repo, and local boot does not require it.
 
 ## `sbm-lab`
 
@@ -24,11 +35,10 @@ Those tests use `sbm-sim`. They do not boot firmware and they do not reboot the 
 
 ## Blockers for neighbors
 
-- Agent 02 (`sbm-core` / `wayvnc`): the recovery path is an outbound device WebSocket and a same-origin browser socket. There is no public VNC port. `sbm-sim` speaks a minimal RFB 3.8 server (160×100, raw encoding, name `sbm-sim (no hardware)`) and a text banner that says it is not a PTY. A real `wayvnc` attachment is not implemented.
-- Agent 01 (`sbm-uefi`): verify commands with the profile in Spec 06 §16.1, and only accept `read_only` and `boot_select` on the boot-policy poll. Do not treat a queued command as a reboot.
-- PostgreSQL: `migrations-postgres/0001_init.sql` is SQL only. The running queries are SQLite. Do not claim a Postgres deployment from this tree.
-- Storage plans and OS install plans return 403 `destructive_disabled` / `os_install_disabled`. There is no configuration flag that turns them on.
+- Agent 02 (`sbm-core` / `wayvnc`): when a recovery image can open an outbound WebSocket to `GET /v1/devices/{id}/recovery/tunnel` with the device certificate, this server will relay those bytes. Until that artifact exists, the session stays `not-attached` and the simulator paints the framebuffer. Do not publish a VNC port.
+- Agent 01 (`sbm-uefi`): verify commands with `sbm_protocol::command_signing_preimage` (Spec 06 §16.1). Accept only `read_only` and `boot_select` on the boot-policy poll. Do not treat a queued command as a reboot.
+- Agent 08 (`sbm-agent`): the boot-success route above is the server side of an optional confirmation. It must not be required to boot, and it must not partition or install.
 
 ## Explicitly not done
 
-No public listener was deployed. WebRTC, WireGuard, and Iroh are not started. The server does not call `SLSSetAppearanceThemeSwitchesAutomatically` or change the Mac's boot or SIP settings. Those are outside this repo.
+The server does not call `SLSSetAppearanceThemeSwitchesAutomatically` or change the Mac's boot or SIP settings. Those are outside this repo.

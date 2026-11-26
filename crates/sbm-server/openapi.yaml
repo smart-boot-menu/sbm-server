@@ -166,6 +166,14 @@ paths:
           description: stored state
         "409":
           description: illegal transition
+  /v1/devices/{id}/boot-success:
+    post:
+      summary: Optional sbm-agent boot confirmation. Does not reboot or queue a command.
+      responses:
+        "200":
+          description: stored, including a repeat of the same report
+        "409":
+          description: the attempt id was already stored with different details
   /v1/devices/{id}/boot-policy:
     get:
       summary: Advisory policy plus UEFI-safe boot_select commands

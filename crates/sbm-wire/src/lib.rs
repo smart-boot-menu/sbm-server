@@ -10,11 +10,8 @@
 #![forbid(unsafe_code)]
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
-use sbm_protocol::{
-    AuthScope, BootCommand, COMMAND_SIGNING_DOMAIN_V1, CommandEnvelope, CommandPayload,
-};
+use sbm_protocol::{AuthScope, BootCommand, CommandEnvelope, CommandPayload};
 use sbm_types::{BootTargetId, SbmErrorCode};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use signature::{Signer, Verifier};
 
@@ -50,41 +47,12 @@ impl CheckOutcome {
     }
 }
 
-#[derive(Serialize)]
-struct Signable<'a> {
-    schema_version: &'a str,
-    command_id: &'a str,
-    device_id: &'a str,
-    sequence: u64,
-    issued_at_unix: i64,
-    expires_at_unix: i64,
-    required_scope: &'a AuthScope,
-    issuer_key_id: &'a str,
-    payload: &'a CommandPayload,
-}
-
 pub fn signing_preimage(envelope: &CommandEnvelope) -> Vec<u8> {
-    let signable = Signable {
-        schema_version: &envelope.schema_version,
-        command_id: &envelope.command_id,
-        device_id: &envelope.device_id,
-        sequence: envelope.sequence,
-        issued_at_unix: envelope.issued_at_unix,
-        expires_at_unix: envelope.expires_at_unix,
-        required_scope: &envelope.required_scope,
-        issuer_key_id: &envelope.issuer_key_id,
-        payload: &envelope.payload,
-    };
-    let json = serde_json::to_vec(&signable).expect("command envelope serializes");
-    let mut out = Vec::with_capacity(COMMAND_SIGNING_DOMAIN_V1.len() + json.len());
-    out.extend_from_slice(COMMAND_SIGNING_DOMAIN_V1);
-    out.extend_from_slice(&json);
-    out
+    sbm_protocol::command_signing_preimage(envelope).expect("command envelope serializes")
 }
 
 pub fn canonical_json(envelope: &CommandEnvelope) -> Vec<u8> {
-    let preimage = signing_preimage(envelope);
-    preimage[COMMAND_SIGNING_DOMAIN_V1.len()..].to_vec()
+    sbm_protocol::command_canonical_json(envelope).expect("command envelope serializes")
 }
 
 pub fn sign(key: &SigningKey, envelope: &mut CommandEnvelope) {
@@ -286,7 +254,212 @@ mod tests {
         let json = canonical_json(&env);
         assert_eq!(std::str::from_utf8(&json).unwrap(), GOLDEN_JSON);
         let preimage = signing_preimage(&env);
-        assert!(preimage.starts_with(COMMAND_SIGNING_DOMAIN_V1));
+        assert!(preimage.starts_with(sbm_protocol::COMMAND_SIGNING_DOMAIN_V1));
+        assert_eq!(
+            preimage,
+            sbm_protocol::command_signing_preimage(&env).unwrap()
+        );
+    }
+
+    #[test]
+    fn canonical_json_matches_serde_json_for_every_payload_kind() {
+        let cases = vec![
+            sample(),
+            boot_with_preset(),
+            recovery_command(),
+            unit_boot(BootCommand::Reboot),
+            unit_boot(BootCommand::Shutdown),
+            unit_boot(BootCommand::RebootToFirmwareSetup),
+            revoke_command(),
+            storage_command(),
+            install_command(),
+        ];
+        for envelope in cases {
+            assert_eq!(
+                canonical_json(&envelope),
+                serde_json::to_vec(&Signable::from(&envelope)).unwrap(),
+                "{}",
+                envelope.command_id
+            );
+        }
+    }
+
+    #[derive(serde::Serialize)]
+    struct Signable<'a> {
+        schema_version: &'a str,
+        command_id: &'a str,
+        device_id: &'a str,
+        sequence: u64,
+        issued_at_unix: i64,
+        expires_at_unix: i64,
+        required_scope: &'a AuthScope,
+        issuer_key_id: &'a str,
+        payload: &'a CommandPayload,
+    }
+
+    impl<'a> From<&'a CommandEnvelope> for Signable<'a> {
+        fn from(envelope: &'a CommandEnvelope) -> Self {
+            Self {
+                schema_version: &envelope.schema_version,
+                command_id: &envelope.command_id,
+                device_id: &envelope.device_id,
+                sequence: envelope.sequence,
+                issued_at_unix: envelope.issued_at_unix,
+                expires_at_unix: envelope.expires_at_unix,
+                required_scope: &envelope.required_scope,
+                issuer_key_id: &envelope.issuer_key_id,
+                payload: &envelope.payload,
+            }
+        }
+    }
+
+    fn boot_with_preset() -> CommandEnvelope {
+        let mut envelope = sample();
+        envelope.command_id = "preset".to_string();
+        envelope.payload = CommandPayload::Boot(BootCommand::BootTarget {
+            target_id: BootTargetId("linux:fedora".to_string()),
+            one_shot: false,
+            extra_cmdline_preset: Some("quiet".to_string()),
+        });
+        envelope
+    }
+
+    fn recovery_command() -> CommandEnvelope {
+        let mut envelope = sample();
+        envelope.command_id = "recovery".to_string();
+        envelope.required_scope = AuthScope::RecoveryAccess;
+        envelope.payload = CommandPayload::Boot(BootCommand::BootRecovery {
+            slot: sbm_protocol::RecoverySlotPreference::SlotA,
+            launch_mode: sbm_protocol::RecoveryLaunchMode::PlannedOperation {
+                plan_id: "plan \"a\"\n\u{0001}β".to_string(),
+            },
+        });
+        envelope
+    }
+
+    fn unit_boot(command: BootCommand) -> CommandEnvelope {
+        let mut envelope = sample();
+        envelope.command_id = "unit".to_string();
+        envelope.payload = CommandPayload::Boot(command);
+        envelope
+    }
+
+    fn revoke_command() -> CommandEnvelope {
+        let mut envelope = sample();
+        envelope.command_id = "revoke".to_string();
+        envelope.required_scope = AuthScope::Admin;
+        envelope.payload = CommandPayload::RevokeEnrollment {
+            reason: "operator said \"stop\"".to_string(),
+        };
+        envelope
+    }
+
+    fn storage_command() -> CommandEnvelope {
+        use sbm_types::{DiskBus, DiskIdentity, StorageOp, StorageOperationPlan};
+        let mut envelope = sample();
+        envelope.command_id = "storage".to_string();
+        envelope.required_scope = AuthScope::StorageDestructive;
+        envelope.payload = CommandPayload::RunStoragePlan(StorageOperationPlan {
+            schema_version: "1.0".to_string(),
+            plan_id: "plan-1".to_string(),
+            target_disk: DiskIdentity {
+                stable_id: "disk-1".to_string(),
+                gpt_disk_guid: None,
+                wwn_or_eui64: None,
+                model: "virt".to_string(),
+                serial_hash: None,
+                size_bytes: 1024,
+                logical_sector_size: 512,
+                bus: DiskBus::Virtio,
+                removable: false,
+                read_only: false,
+            },
+            expected_partition_table_sha256: "abc".to_string(),
+            operations: vec![StorageOp::DeletePartition {
+                partition_guid: "guid".to_string(),
+            }],
+            destructive: true,
+            reversible: false,
+            touched_protected_classes: vec![],
+            dry_run_summary: vec!["delete".to_string()],
+        });
+        envelope
+    }
+
+    fn install_command() -> CommandEnvelope {
+        use sbm_types::{
+            BootRegistrationPlan, CpuArch, InstallStrategy, OsInstallPlan, VerifiedArtifactRef,
+        };
+        let CommandPayload::RunStoragePlan(storage) = storage_command().payload else {
+            unreachable!();
+        };
+        let mut envelope = sample();
+        envelope.command_id = "install".to_string();
+        envelope.required_scope = AuthScope::OsInstall;
+        envelope.payload = CommandPayload::RunOsInstall(OsInstallPlan {
+            schema_version: "1.0".to_string(),
+            plan_id: "install-1".to_string(),
+            catalog_entry_id: "fedora".to_string(),
+            catalog_release_version: "45".to_string(),
+            target_arch: CpuArch::X86_64,
+            strategy: InstallStrategy::RootfsImageExtract,
+            artifact_verification: vec![VerifiedArtifactRef {
+                filename: "root.img".to_string(),
+                size_bytes: 10,
+                sha256: "aa".to_string(),
+                source_url_or_path: "file://root.img".to_string(),
+            }],
+            storage_plan: storage,
+            boot_registration: BootRegistrationPlan {
+                register_bls_or_efi: true,
+                set_as_default: false,
+                display_name: None,
+            },
+            offline_media_only: true,
+        });
+        envelope
+    }
+
+    #[test]
+    fn published_signing_vectors_verify() {
+        let document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../sbm-common/test-vectors/command-signing.v1.json"
+        ))
+        .unwrap();
+        let seed = hex::decode(document["seed_hex"].as_str().unwrap()).unwrap();
+        let key = SigningKey::from_bytes(&seed.try_into().unwrap());
+        assert_eq!(
+            hex::encode(key.verifying_key().to_bytes()),
+            document["public_key_hex"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(sbm_protocol::COMMAND_SIGNING_DOMAIN_V1),
+            document["domain_hex"].as_str().unwrap()
+        );
+        let envelopes = [
+            ("boot_target", sample()),
+            ("boot_recovery", recovery_command()),
+            ("revoke_enrollment", revoke_command()),
+        ];
+        for case in document["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let (_, envelope) = envelopes
+                .iter()
+                .find(|(label, _)| *label == name)
+                .unwrap_or_else(|| panic!("missing case {name}"));
+            let json = canonical_json(envelope);
+            assert_eq!(
+                std::str::from_utf8(&json).unwrap(),
+                case["canonical_json"].as_str().unwrap()
+            );
+            let mut signed = envelope.clone();
+            sign(&key, &mut signed);
+            assert_eq!(
+                signed.signature_ed25519_hex,
+                case["signature_ed25519_hex"].as_str().unwrap()
+            );
+            assert!(verify(&key.verifying_key(), &signed).is_ok());
+        }
     }
 
     #[test]

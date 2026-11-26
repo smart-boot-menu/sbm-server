@@ -62,6 +62,16 @@ CREATE TABLE devices (
     simulated INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE boot_reports (
+    device_id TEXT NOT NULL REFERENCES devices(id),
+    attempt_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    confirmed_by TEXT NOT NULL,
+    confirmed_at_unix BIGINT NOT NULL,
+    received_at BIGINT NOT NULL,
+    PRIMARY KEY (device_id, attempt_id)
+);
+
 CREATE TABLE device_certs (
     cert_sha256 TEXT PRIMARY KEY,
     device_id TEXT NOT NULL REFERENCES devices(id),

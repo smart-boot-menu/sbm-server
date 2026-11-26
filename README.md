@@ -8,7 +8,7 @@ This tree runs locally: the Rust server, the embedded SvelteKit dashboard, and `
 
 Sibling checkout, pinned by the tests and the container build:
 
-`../sbm-common` at `28d38450954f0b93815e12f31da92370b13a7462`
+`../sbm-common` at `4b432228caae40479d28c8f6f48fb7cb9cc6df85`
 
 ```sh
 cd web && npm ci && npm run build && cd ..

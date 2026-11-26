@@ -10,7 +10,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-ARG SBM_COMMON_REV=28d38450954f0b93815e12f31da92370b13a7462
+ARG SBM_COMMON_REV=4b432228caae40479d28c8f6f48fb7cb9cc6df85
 RUN git init sbm-common \
     && git -C sbm-common remote add origin https://github.com/smart-boot-menu/sbm-common.git \
     && git -C sbm-common fetch --depth 1 origin ${SBM_COMMON_REV} \

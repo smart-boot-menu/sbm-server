@@ -187,6 +187,30 @@ impl Db {
         Ok(())
     }
 
+    pub async fn update_passkey(
+        &self,
+        credential_id: &str,
+        operator_id: &str,
+        passkey_json: &str,
+    ) -> Result<(), ApiError> {
+        let result = sqlx::query(
+            "UPDATE webauthn_credentials SET passkey_json = ? WHERE credential_id = ? AND operator_id = ?",
+        )
+        .bind(passkey_json)
+        .bind(credential_id)
+        .bind(operator_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(ApiError::conflict(
+                "credential_missing",
+                "passkey credential was not stored",
+            ))
+        }
+    }
+
     pub async fn passkeys_for(&self, operator_id: &str) -> Result<Vec<(String, String)>, ApiError> {
         let rows = sqlx::query(
             "SELECT credential_id, passkey_json FROM webauthn_credentials WHERE operator_id = ?",
@@ -953,6 +977,48 @@ impl Db {
             })
             .collect())
     }
+
+    pub async fn record_boot_success(
+        &self,
+        device_id: &str,
+        attempt_id: &str,
+        target_id: &str,
+        confirmed_by: &str,
+        confirmed_at_unix: i64,
+        received_at: i64,
+    ) -> Result<(), ApiError> {
+        let existing = sqlx::query(
+            "SELECT target_id, confirmed_by, confirmed_at_unix FROM boot_reports WHERE device_id = ? AND attempt_id = ?",
+        )
+        .bind(device_id)
+        .bind(attempt_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(row) = existing {
+            let same = row.get::<String, _>("target_id") == target_id
+                && row.get::<String, _>("confirmed_by") == confirmed_by
+                && row.get::<i64, _>("confirmed_at_unix") == confirmed_at_unix;
+            if same {
+                return Ok(());
+            }
+            return Err(ApiError::conflict(
+                "conflict",
+                "this attempt was already confirmed with different details",
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO boot_reports (device_id, attempt_id, target_id, confirmed_by, confirmed_at_unix, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(device_id)
+        .bind(attempt_id)
+        .bind(target_id)
+        .bind(confirmed_by)
+        .bind(confirmed_at_unix)
+        .bind(received_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 async fn audit_tx(
@@ -1050,4 +1116,29 @@ fn recovery_json(row: sqlx::sqlite::SqliteRow) -> Value {
         "expires_at": row.get::<i64, _>("expires_at"),
         "closed_at": row.get::<Option<i64>, _>("closed_at"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn updating_a_passkey_replaces_the_stored_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::connect(&dir.path().join("sbm.db")).await.unwrap();
+        db.insert_operator("op", "ada", "Ada", 1).await.unwrap();
+        db.insert_passkey("cred", "op", r#"{"counter":1}"#, 1)
+            .await
+            .unwrap();
+        db.update_passkey("cred", "op", r#"{"counter":2}"#)
+            .await
+            .unwrap();
+        let rows = db.passkeys_for("op").await.unwrap();
+        assert_eq!(
+            rows,
+            vec![("cred".to_string(), r#"{"counter":2}"#.to_string())]
+        );
+        assert!(db.update_passkey("missing", "op", "{}").await.is_err());
+        assert!(db.insert_passkey("cred", "op", "{}", 2).await.is_err());
+    }
 }

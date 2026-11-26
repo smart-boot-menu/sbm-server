@@ -66,6 +66,7 @@ pub fn router(state: AppState) -> Router {
             post(routes::install_disabled),
         )
         .route("/devices/{id}/pending", get(routes::pending))
+        .route("/devices/{id}/boot-success", post(routes::boot_success))
         .route("/devices/{id}/recovery/tunnel", get(routes::device_tunnel))
         .route("/recovery-sessions", post(routes::open_recovery))
         .route("/recovery-sessions/{id}", get(routes::recovery_status))

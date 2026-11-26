@@ -11,10 +11,13 @@ repository.workspace = true
 sbm-protocol.workspace = true
 sbm-types.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
 sha2.workspace = true
 base64.workspace = true
 getrandom.workspace = true
 signature.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

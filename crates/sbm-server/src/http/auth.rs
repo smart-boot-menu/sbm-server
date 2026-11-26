@@ -324,17 +324,20 @@ pub async fn login_finish(
         .finish_passkey_authentication(&credential, &state)
         .map_err(passkey_err)?;
     let mut passkeys = load_passkeys(&app, &operator_id).await?;
-    if let Some(passkey) = passkeys
+    let Some(passkey) = passkeys
         .iter_mut()
         .find(|passkey| passkey.cred_id() == auth.cred_id())
-    {
-        let _ = passkey.update_credential(&auth);
-        let json = serde_json::to_string(passkey).map_err(|_| ApiError::internal())?;
-        let id = URL_SAFE_NO_PAD.encode(passkey.cred_id());
-        app.db
-            .insert_passkey(&id, &operator_id, &json, app.clock.unix())
-            .await
-            .ok();
+    else {
+        return Err(ApiError::unauthorized("passkey is no longer registered"));
+    };
+    match passkey.update_credential(&auth) {
+        Some(true) => {
+            let json = serde_json::to_string(passkey).map_err(|_| ApiError::internal())?;
+            let id = URL_SAFE_NO_PAD.encode(passkey.cred_id());
+            app.db.update_passkey(&id, &operator_id, &json).await?;
+        }
+        Some(false) => {}
+        None => return Err(ApiError::unauthorized("passkey credential did not match")),
     }
     let (token, csrf, op) = issue_session(&app, &operator_id).await?;
     app.db

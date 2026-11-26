@@ -13,8 +13,8 @@ use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use ed25519_dalek::{Signature, VerifyingKey};
 use sbm_protocol::{
-    AuthScope, BootCommand, BootPolicy, CommandEnvelope, CommandPayload, OfflineBehavior,
-    OneShotBoot,
+    AuthScope, BootCommand, BootPolicy, BootSuccessReport, CommandEnvelope, CommandPayload,
+    OfflineBehavior, OneShotBoot,
 };
 use sbm_types::{BootTarget, SCHEMA_VERSION_V1};
 use sbm_wire::{decode_key_32, expected_scope, preset_allowed, sign};
@@ -400,6 +400,62 @@ pub async fn pending(
     ))
 }
 
+pub async fn boot_success(
+    State(app): State<AppState>,
+    Path(id): Path<String>,
+    CertDer(der): CertDer,
+    In(body): In<BootSuccessReport>,
+) -> Result<Json<Value>, ApiError> {
+    let dev = require_device(&app, &der).await?;
+    if dev.id != id || dev.status != "enrolled" {
+        return Err(ApiError::not_found());
+    }
+    if body.schema_version != SCHEMA_VERSION_V1 {
+        return Err(ApiError::invalid("schema_version must be 1.0"));
+    }
+    let attempt = clean_text(&body.attempt_id, 80)
+        .ok_or_else(|| ApiError::invalid("attempt_id is required"))?;
+    if !body.target_id.is_valid() {
+        return Err(ApiError::invalid("target_id is not a boot target id"));
+    }
+    if body.confirmed_at_unix <= 0 {
+        return Err(ApiError::invalid("confirmed_at_unix must be positive"));
+    }
+    let confirmed_by = serde_json::to_value(body.confirmed_by)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .ok_or_else(|| ApiError::invalid("confirmed_by is not a component"))?;
+    let now = app.clock.unix();
+    app.db
+        .record_boot_success(
+            &dev.id,
+            &attempt,
+            body.target_id.as_str(),
+            &confirmed_by,
+            body.confirmed_at_unix,
+            now,
+        )
+        .await?;
+    app.db
+        .audit(
+            now,
+            "device",
+            &dev.id,
+            "device.boot_success",
+            Some(&dev.id),
+            &json!({
+                "attempt_id": attempt,
+                "target_id": body.target_id.as_str(),
+                "confirmed_by": confirmed_by,
+            }),
+        )
+        .await?;
+    Ok(Json(json!({
+        "stored": true,
+        "note": "The report is recorded. No reboot was requested.",
+    })))
+}
+
 pub async fn boot_policy(
     State(app): State<AppState>,
     Path(id): Path<String>,
@@ -764,7 +820,7 @@ pub async fn open_recovery(
     let now = app.clock.unix();
     let expires = now + 900;
     app.db
-        .create_recovery(&id, &device.id, &op.id, "wayvnc", now, expires)
+        .create_recovery(&id, &device.id, &op.id, "outbound-tunnel", now, expires)
         .await?;
     app.hub.open(&format!("{id}:vnc"));
     app.hub.open(&format!("{id}:terminal"));
@@ -782,7 +838,9 @@ pub async fn open_recovery(
         "id": id,
         "state": "authorized",
         "expires_at_unix": expires,
-        "note": "The session is authorized. It is not connected until the device dials out. No VNC port is published.",
+        "desktop": "not-attached",
+        "transport": "device-initiated-websocket",
+        "note": "The session is authorized. It is not connected until the device dials out. No VNC port is published. wayvnc is not attached.",
         "vnc_path": format!("/v1/recovery-sessions/{id}/vnc"),
         "terminal_path": format!("/v1/recovery-sessions/{id}/terminal"),
     })))

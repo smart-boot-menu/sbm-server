@@ -360,6 +360,10 @@ impl Device {
         Ok(())
     }
 
+    pub fn http(&self) -> reqwest::Client {
+        self.client().expect("device tls client")
+    }
+
     fn client(&self) -> SimResult<reqwest::Client> {
         http_client(&self.ca_pem, Some(&self.identity_pem()))
     }

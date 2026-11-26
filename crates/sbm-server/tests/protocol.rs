@@ -575,6 +575,230 @@ async fn dashboard_shell_is_served_with_a_script_hash() {
     assert!(!csp.contains("unsafe-eval"), "{csp}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revocation_replay_and_cross_device_commands_stay_isolated() {
+    let lab = Lab::start().await;
+    let mut device_a = lab.enroll("lab-a").await;
+    let device_b = lab.enroll("lab-b").await;
+    device_a.sync_once(Mode::Uefi).await.unwrap();
+    let issued = lab
+        .post(
+            &format!("/v1/devices/{}/commands", device_a.device_id),
+            &lab.token,
+            json!({
+                "command": { "action": "boot_target", "target_id": "linux:fedora", "one_shot": true }
+            }),
+        )
+        .await;
+    let command_id = issued["command"]["command_id"].as_str().unwrap();
+    let applied = device_a.sync_once(Mode::Uefi).await.unwrap();
+    assert_eq!(applied.executed, vec![command_id.to_string()]);
+    let again = device_a
+        .http()
+        .post(format!(
+            "{}/v1/devices/{}/commands/{command_id}/ack",
+            lab.server.base_url, device_a.device_id
+        ))
+        .json(&json!({ "state": "executed", "message": "repeated" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        again.status().as_u16(),
+        200,
+        "{}",
+        again.text().await.unwrap_or_default()
+    );
+
+    lab.post(
+        &format!("/v1/devices/{}/revoke", device_a.device_id),
+        &lab.token,
+        json!({ "reason": "operator revoked the enrollment" }),
+    )
+    .await;
+    let pending_a = device_a
+        .http()
+        .get(format!(
+            "{}/v1/devices/{}/pending",
+            lab.server.base_url, device_a.device_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    let pending_a = json_ok(pending_a).await;
+    let kinds: Vec<_> = pending_a["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["payload"]["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, vec!["revoke_enrollment".to_string()]);
+    let crossed = device_b
+        .http()
+        .get(format!(
+            "{}/v1/devices/{}/pending",
+            lab.server.base_url, device_a.device_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(crossed.status().as_u16(), 404);
+    let own = device_b
+        .http()
+        .get(format!(
+            "{}/v1/devices/{}/pending",
+            lab.server.base_url, device_b.device_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    let own = json_ok(own).await;
+    assert!(own["commands"].as_array().unwrap().is_empty());
+    let (status, body) = lab
+        .status(
+            "POST",
+            &format!("/v1/devices/{}/commands", device_a.device_id),
+            &lab.token,
+            Some(json!({
+                "command": { "action": "boot_target", "target_id": "linux:fedora", "one_shot": true }
+            })),
+        )
+        .await;
+    assert_eq!(status, 409, "{body}");
+    let policy = device_a
+        .http()
+        .get(format!(
+            "{}/v1/devices/{}/boot-policy",
+            lab.server.base_url, device_a.device_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    let policy = json_ok(policy).await;
+    assert!(policy["commands"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn boot_success_is_stored_for_the_calling_device_only() {
+    let lab = Lab::start().await;
+    let device = lab.enroll("lab-vm").await;
+    let other = lab.enroll("other").await;
+    let report = json!({
+        "schema_version": "1.0",
+        "attempt_id": "attempt-1",
+        "target_id": "linux:fedora",
+        "confirmed_by": "sbm-agent",
+        "confirmed_at_unix": 1_700_000_000
+    });
+    let first = device_http(&device)
+        .post(format!(
+            "{}/v1/devices/{}/boot-success",
+            lab.server.base_url, device.device_id
+        ))
+        .json(&report)
+        .send()
+        .await
+        .unwrap();
+    let first = json_ok(first).await;
+    assert_eq!(first["stored"], true);
+    assert!(first["note"].as_str().unwrap().contains("No reboot"));
+    let repeat = device_http(&device)
+        .post(format!(
+            "{}/v1/devices/{}/boot-success",
+            lab.server.base_url, device.device_id
+        ))
+        .json(&report)
+        .send()
+        .await
+        .unwrap();
+    assert!(repeat.status().is_success());
+    let mut changed = report.clone();
+    changed["target_id"] = json!("windows:11");
+    let conflict = device_http(&device)
+        .post(format!(
+            "{}/v1/devices/{}/boot-success",
+            lab.server.base_url, device.device_id
+        ))
+        .json(&changed)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status().as_u16(), 409);
+    let foreign = other
+        .http()
+        .post(format!(
+            "{}/v1/devices/{}/boot-success",
+            lab.server.base_url, device.device_id
+        ))
+        .json(&report)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status().as_u16(), 404);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(lab.server.data_dir.join("sbm.db"))
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM boot_reports WHERE device_id = ? AND attempt_id = 'attempt-1'",
+    )
+    .bind(&device.device_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_rejects_a_browser_without_a_session_and_another_device() {
+    let lab = Lab::start().await;
+    let device = lab.enroll("lab-a").await;
+    let other = lab.enroll("lab-b").await;
+    let opened = lab
+        .post(
+            "/v1/recovery-sessions",
+            &lab.token,
+            json!({ "device_id": device.device_id }),
+        )
+        .await;
+    assert_eq!(opened["desktop"], "not-attached");
+    assert_eq!(opened["transport"], "device-initiated-websocket");
+    let session = opened["id"].as_str().unwrap();
+    let anonymous = lab
+        .http
+        .get(lab.url(&format!("/v1/recovery-sessions/{session}/vnc")))
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status().as_u16(), 401);
+    let foreign = other
+        .http()
+        .get(format!(
+            "{}/v1/devices/{}/recovery/tunnel?session={session}&kind=vnc",
+            lab.server.base_url, device.device_id
+        ))
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status().as_u16(), 404);
+}
+
+fn device_http(device: &Device) -> reqwest::Client {
+    http_client(&device.ca_pem, Some(&device.identity_pem())).unwrap()
+}
+
 fn unix_now() -> i64 {
     i64::try_from(
         SystemTime::now()
