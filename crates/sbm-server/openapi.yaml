@@ -1,0 +1,204 @@
+openapi: 3.0.3
+info:
+  title: Smart Boot Menu Server
+  version: 0.1.0
+  description: |
+    Optional self-hosted management API. Local boot does not call this server.
+    A queued command is not a reboot. `executed` means the device reported a result.
+    Remote destructive storage and OS installation are not enabled.
+servers:
+  - url: https://localhost:8443
+paths:
+  /healthz:
+    get:
+      summary: Process is running
+      responses:
+        "200":
+          description: ok
+  /readyz:
+    get:
+      summary: Database is reachable
+      responses:
+        "200":
+          description: ready
+  /v1/meta:
+    get:
+      summary: CA fingerprint, command verify key, and capability flags
+      responses:
+        "200":
+          description: public server metadata
+  /v1/openapi.yaml:
+    get:
+      summary: This document
+      responses:
+        "200":
+          description: OpenAPI YAML
+  /v1/auth/dev-login:
+    post:
+      summary: Lab bootstrap login. 404 unless SBM_DEV_BOOTSTRAP=1
+      responses:
+        "200":
+          description: session
+        "404":
+          description: bootstrap disabled
+  /v1/auth/passkey/register/options:
+    post:
+      summary: Begin passkey registration. The first operator becomes admin
+      responses:
+        "200":
+          description: WebAuthn creation options
+  /v1/auth/passkey/register/finish:
+    post:
+      summary: Finish passkey registration
+      responses:
+        "200":
+          description: session
+  /v1/auth/passkey/login/options:
+    post:
+      summary: Begin passkey login for a username
+      responses:
+        "200":
+          description: WebAuthn request options
+  /v1/auth/passkey/login/finish:
+    post:
+      summary: Finish passkey login
+      responses:
+        "200":
+          description: session
+  /v1/auth/logout:
+    post:
+      summary: Delete the current session
+      responses:
+        "204":
+          description: signed out
+  /v1/auth/me:
+    get:
+      summary: Current operator
+      responses:
+        "200":
+          description: operator
+  /v1/enrollment-tokens:
+    post:
+      summary: Create a one-time enrollment token. The plaintext is returned once
+      responses:
+        "200":
+          description: token bundle
+    get:
+      summary: List tokens without the secret
+      responses:
+        "200":
+          description: token metadata
+  /v1/enroll:
+    post:
+      summary: Exchange a token and a device Ed25519 public key for a client certificate
+      responses:
+        "200":
+          description: enrollment response
+  /v1/devices:
+    get:
+      summary: Devices visible to the operator
+      responses:
+        "200":
+          description: device list
+  /v1/devices/{id}:
+    get:
+      summary: Device detail, inventory, targets, policy, and command history
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: device
+  /v1/devices/{id}/commands:
+    post:
+      summary: Queue a signed boot command. State is requested, not executed
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: requested command
+    get:
+      summary: Command history with real states
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: commands
+  /v1/devices/{id}/pending:
+    get:
+      summary: Device mTLS poll. Marks requested commands delivered
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: pending envelopes
+  /v1/devices/{id}/commands/{command_id}/ack:
+    post:
+      summary: Device reports accepted, executed, failed, or rejected
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: command_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: stored state
+        "409":
+          description: illegal transition
+  /v1/devices/{id}/boot-policy:
+    get:
+      summary: Advisory policy plus UEFI-safe boot_select commands
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: policy
+  /v1/devices/{id}/storage-plans:
+    post:
+      summary: Always refused in this release
+      responses:
+        "403":
+          description: destructive_disabled
+  /v1/devices/{id}/os-install-plans:
+    post:
+      summary: Always refused in this release
+      responses:
+        "403":
+          description: os_install_disabled
+  /v1/audit:
+    get:
+      summary: Append-only audit log
+      responses:
+        "200":
+          description: entries
+  /v1/security:
+    get:
+      summary: Server key identifiers and disabled capabilities
+      responses:
+        "200":
+          description: security posture

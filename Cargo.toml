@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/sbm-wire", "crates/sbm-server", "crates/sbm-sim"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/smart-boot-menu/sbm-server"
+
+[workspace.dependencies]
+sbm-protocol = { path = "../sbm-common/crates/sbm-protocol" }
+sbm-types = { path = "../sbm-common/crates/sbm-types" }
+sbm-wire = { path = "crates/sbm-wire" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "fs", "sync", "time", "signal", "io-util"] }
+thiserror = "2"
+hex = "0.4"
+sha2 = "0.10"
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["alloc", "zeroize"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+base64 = "0.22"
+getrandom = "0.3"
+time = "0.3"
+url = "2"
+subtle = "2"
+tracing = "0.1"
+axum = { version = "0.8.9", features = ["ws", "json", "macros"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "logging"] }
+rcgen = { version = "0.14.10", features = ["pem", "x509-parser"] }
+signature = "3"

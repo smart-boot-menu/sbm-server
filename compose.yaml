@@ -1,0 +1,15 @@
+services:
+  sbm-server:
+    build: .
+    ports:
+      - "127.0.0.1:8443:8443"
+    environment:
+      SBM_BIND: "0.0.0.0:8443"
+      SBM_DATA_DIR: /data
+      SBM_PUBLIC_ORIGIN: https://localhost:8443
+      SBM_RP_ID: localhost
+    volumes:
+      - sbm-data:/data
+
+volumes:
+  sbm-data:

@@ -1,0 +1,14 @@
+# Copy to a private path and point SBM_CONFIG at it.
+# Environment variables override these keys. Do not put a bootstrap secret in a committed file.
+
+bind = "127.0.0.1:8443"
+data_dir = "./data"
+public_origin = "https://localhost:8443"
+rp_id = "localhost"
+dev_bootstrap = false
+enrollment_ttl_seconds = 600
+boot_command_ttl_seconds = 43200
+recovery_command_ttl_seconds = 1800
+session_ttl_seconds = 43200
+log_format = "text"
+insecure_http = false

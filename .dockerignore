@@ -1,0 +1,7 @@
+target
+data
+.git
+web/node_modules
+web/.svelte-kit
+crates/sbm-server/assets
+*.sim.json

@@ -1,0 +1,27 @@
+{
+  "name": "sbm-dashboard",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "5.2.7",
+    "@fontsource/ibm-plex-sans": "5.2.8",
+    "@novnc/novnc": "1.7.0",
+    "@xterm/xterm": "6.0.0"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "4.0.1",
+    "@sveltejs/kit": "3.4.0",
+    "@sveltejs/vite-plugin-svelte": "7.0.0",
+    "svelte": "5.59.2",
+    "typescript": "6.0.3",
+    "vite": "8.0.12"
+  }
+}

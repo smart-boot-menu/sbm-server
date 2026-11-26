@@ -1,0 +1,22 @@
+/*
+  Local dashboard tokens. These are not part of sbm-common.
+  The console is a warm graphite field with copper and brass marks.
+*/
+:root {
+  --ink: #f4efe6;
+  --ink-dim: #b7ab9d;
+  --ink-faint: #8b7f72;
+  --field: #161311;
+  --panel: #241f1b;
+  --panel-raised: #2e2823;
+  --line: #3d342c;
+  --copper: #c4784a;
+  --copper-deep: #8d4e2c;
+  --brass: #d7b36a;
+  --ok: #8eae78;
+  --danger: #c45c4a;
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+  --sans: "IBM Plex Sans", "Avenir Next", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --radius: 14px;
+}

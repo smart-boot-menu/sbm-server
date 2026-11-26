@@ -9,11 +9,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify repository baseline (Cargo checks activate once Cargo.toml is added)
+        with:
+          path: sbm-server
+      - uses: actions/checkout@v4
+        with:
+          repository: smart-boot-menu/sbm-common
+          ref: 28d38450954f0b93815e12f31da92370b13a7462
+          path: sbm-common
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sbm-server/web/package-lock.json
+      - name: Build the dashboard
+        working-directory: sbm-server/web
+        run: npm ci && npm run build
+      - name: Format, lint, and test
+        working-directory: sbm-server
         run: |
           test -f README.md && test -f AGENTS.md
-          if [ -f Cargo.toml ]; then
-            cargo fmt --all -- --check
-            cargo clippy --all-targets -- -D warnings
-            cargo test --workspace
-          fi
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --workspace
