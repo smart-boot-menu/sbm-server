@@ -21,9 +21,8 @@ PORT = "18543"
 N = 10
 
 
-def wait_health(ca, deadline):
+def wait_health(ca, started, deadline):
     url = f"https://127.0.0.1:{PORT}/healthz"
-    started = time.monotonic()
     ctx = None
     while time.monotonic() < deadline:
         if ctx is None and os.path.isfile(ca):
@@ -33,10 +32,10 @@ def wait_health(ca, deadline):
             try:
                 with urllib.request.urlopen(url, context=ctx, timeout=1) as response:
                     if response.status == 200:
-                        return time.monotonic() - started
+                        return (time.monotonic() - started) * 1000
             except Exception:
                 pass
-        time.sleep(0.02)
+        time.sleep(0.001)
     raise SystemExit("healthz did not return 200")
 
 
@@ -109,21 +108,24 @@ def main():
     try:
         cold_dir = os.path.join(work, "cold")
         os.mkdir(cold_dir)
+        cold_started = time.monotonic()
         cold = start_server(cold_dir)
-        cold_ms = wait_health(os.path.join(cold_dir, "ca.cert.pem"), time.monotonic() + 30) * 1000
+        cold_ms = wait_health(os.path.join(cold_dir, "ca.cert.pem"), cold_started, cold_started + 30)
         stop(cold)
 
         warm_dir = os.path.join(work, "warm")
         shutil.copytree(cold_dir, warm_dir)
         warm = []
         for _ in range(N):
+            started = time.monotonic()
             proc = start_server(warm_dir)
-            warm.append(wait_health(os.path.join(warm_dir, "ca.cert.pem"), time.monotonic() + 30) * 1000)
+            warm.append(wait_health(os.path.join(warm_dir, "ca.cert.pem"), started, started + 30))
             stop(proc)
 
+        started = time.monotonic()
         proc = start_server(warm_dir)
         ca = os.path.join(warm_dir, "ca.cert.pem")
-        wait_health(ca, time.monotonic() + 30)
+        wait_health(ca, started, started + 30)
         ctx = ssl.create_default_context()
         ctx.load_verify_locations(ca)
         health = timed_gets(f"https://127.0.0.1:{PORT}/healthz", ctx, N + 2)[2:]
@@ -181,6 +183,7 @@ def main():
         "healthz_request": summarize(health),
         "boot_policy_request": summarize(policy),
         "warmup_requests_dropped": 2,
+        "startup_clock": "time.monotonic immediately before Popen until the first healthz 200; poll interval 1 ms",
         "percentile_index": "round(percent/100 * (n - 1)) on the sorted samples",
     }, indent=2))
 
